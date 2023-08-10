@@ -1,5 +1,6 @@
 const std = @import("std");
 const zsdl = @import("zsdl");
+const zsdl_gfx = @import("zsdl_gfx.zig");
 
 // missing from zsdl
 pub fn waitEvent() !zsdl.Event {
@@ -182,22 +183,16 @@ const Drawing = struct {
     }
 
     fn render(self: Drawing, renderer: *zsdl.Renderer) !void {
-        for (self.lines.items, 0..) |line, i| {
-            std.log.info("Drawing.render line {}: {}", .{ i, line });
+        for (self.lines.items) |line|
             try line.render(renderer);
-        }
 
-        try renderer.setDrawColorRGB(255, 0, 0);
-        for (self.points.items, 0..) |point, i| {
-            std.log.info("Drawing.render point {}: {}", .{ i, point });
-            try renderer.drawPointF(point.x, point.y);
-        }
+        for (self.points.items) |point|
+            try zsdl_gfx.aaFilledEllipseRGBA(renderer, point, .{ .x = 2.5, .y = 2.5 }, zsdl.Color.red);
     }
 
     fn mouseEvent(self: *Drawing, event_type: enum { up, down, move }, mouse_pos: zsdl.Point) !bool {
         switch (event_type) {
             .down => {
-                std.log.info(".down", .{});
 
                 // TODO check tool
                 Globals.needs_repaint = true;
@@ -207,14 +202,13 @@ const Drawing = struct {
                     .x = @floatFromInt(mouse_pos.x),
                     .y = @floatFromInt(mouse_pos.y),
                 });
+                std.log.debug("added point {}: {any}", .{ self.points.items.len - 1, self.points.getLast() });
 
                 try self.lines.append(self.allocator, .{ .start = self.points.items.len - 1 });
 
-                std.log.info(".down done", .{});
                 return true;
             },
             .move => {
-                std.log.info(".move", .{});
                 if (self.lines.getLastOrNull()) |line| {
                     if (line.end == null) {
                         Globals.needs_repaint = true;
@@ -236,9 +230,10 @@ const Drawing = struct {
                         .x = @floatFromInt(mouse_pos.x),
                         .y = @floatFromInt(mouse_pos.y),
                     });
+                    std.log.debug("point {}: {any}", .{ self.points.items.len - 1, self.points.getLast() });
 
                     line.end = self.points.items.len - 1;
-                    std.log.info("ended line: {any}", .{self.lines.getLast()});
+                    std.log.debug("line {}: {any}", .{ self.lines.items.len - 1, self.lines.getLast() });
                     return true;
                 }
             },
@@ -349,20 +344,14 @@ pub fn main() !void {
 }
 
 fn draw(renderer: *zsdl.Renderer) !void {
-    std.log.info(".draw", .{});
     if (Globals.needs_repaint) {
         Globals.needs_repaint = false;
 
-        std.log.info(".draw axes", .{});
         try renderAxes(renderer);
-        std.log.info(".draw drawing", .{});
         try Globals.drawing.render(renderer);
-        std.log.info(".draw toolbar", .{});
         try Globals.toolbar.render(renderer);
 
-        std.log.info(".draw present", .{});
         renderer.present();
-        std.log.info(".draw done", .{});
     }
 }
 
