@@ -277,10 +277,7 @@ pub fn main() !void {
     );
     defer window.destroy();
 
-    Globals.renderer = try zsdl.Renderer.create(window, null, .{
-        .accelerated = true,
-        .present_vsync = true,
-    });
+    Globals.renderer = try zsdl.Renderer.create(window, null, .{});
     defer Globals.renderer.destroy();
 
     var ww: i32 = undefined;
