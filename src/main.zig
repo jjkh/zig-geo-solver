@@ -18,7 +18,7 @@ fn filterEvent(userdata: *anyopaque, event: *zsdl.Event) callconv(.C) c_int {
         const frame_start = zsdl.getPerformanceCounter();
 
         Globals.needs_repaint = true;
-        draw() catch |err| std.log.err("failed draw during filterEvent! err={}", .{err});
+        draw(Globals.renderer) catch |err| std.log.err("failed draw during filterEvent! err={}", .{err});
 
         const elapsed: f32 = @as(f32, @floatFromInt(zsdl.getPerformanceCounter() - frame_start)) /
             @as(f32, @floatFromInt(zsdl.getPerformanceFrequency()));
@@ -41,12 +41,13 @@ fn logButtonPress(tool: Toolbar.Tool) void {
 
 const Toolbar = struct {
     tools: std.BoundedArray(Tool, 10) = .{},
-    selected: u16 = 0,
+    selected: u16 = 1,
     hovered: ?u16 = null,
 
     pos: zsdl.Point = .{ .x = 0, .y = 0 },
     tool_size: f16 = 30,
 
+    // TODO: make tagged union
     pub const Tool = struct {
         name: [:0]const u8,
         action: ?*const fn (@This()) void = null,
@@ -118,7 +119,7 @@ const Toolbar = struct {
                     }
                     return false;
                 },
-                else => return false,
+                else => {},
             }
             return true;
         } else {
@@ -139,8 +140,118 @@ const Toolbar = struct {
     }
 };
 
+// TODO: give units and whatever
+const Line = struct {
+    start: usize,
+    end: ?usize = null,
+
+    fn render(self: Line, renderer: *zsdl.Renderer) !void {
+        const start = Globals.drawing.points.items[self.start];
+        const end = if (self.end) |end_idx|
+            Globals.drawing.points.items[end_idx]
+        else pt: {
+            var mouse_x: i32 = undefined;
+            var mouse_y: i32 = undefined;
+            _ = zsdl.getMouseState(&mouse_x, &mouse_y);
+            break :pt zsdl.PointF{ .x = @floatFromInt(mouse_x), .y = @floatFromInt(mouse_y) };
+        };
+
+        try renderer.setDrawColorRGB(0, 0, 0);
+        try renderer.drawLineF(start.x, start.y, end.x, end.y);
+    }
+
+    fn setEnd(self: *Line, end: *const zsdl.PointF) void {
+        self.end = end;
+    }
+};
+
+const Drawing = struct {
+    allocator: std.mem.Allocator,
+
+    // TODO: use zpool? does it makes sense here?
+    points: std.ArrayListUnmanaged(zsdl.PointF) = .{},
+    lines: std.ArrayListUnmanaged(Line) = .{},
+
+    fn init(allocator: std.mem.Allocator) Drawing {
+        return .{ .allocator = allocator };
+    }
+
+    fn deinit(self: *Drawing) void {
+        self.lines.deinit(self.allocator);
+        self.points.deinit(self.allocator);
+    }
+
+    fn render(self: Drawing, renderer: *zsdl.Renderer) !void {
+        for (self.lines.items, 0..) |line, i| {
+            std.log.info("Drawing.render line {}: {}", .{ i, line });
+            try line.render(renderer);
+        }
+
+        try renderer.setDrawColorRGB(255, 0, 0);
+        for (self.points.items, 0..) |point, i| {
+            std.log.info("Drawing.render point {}: {}", .{ i, point });
+            try renderer.drawPointF(point.x, point.y);
+        }
+    }
+
+    fn mouseEvent(self: *Drawing, event_type: enum { up, down, move }, mouse_pos: zsdl.Point) !bool {
+        switch (event_type) {
+            .down => {
+                std.log.info(".down", .{});
+
+                // TODO check tool
+                Globals.needs_repaint = true;
+
+                // TODO handle snapping
+                try self.points.append(self.allocator, .{
+                    .x = @floatFromInt(mouse_pos.x),
+                    .y = @floatFromInt(mouse_pos.y),
+                });
+
+                try self.lines.append(self.allocator, .{ .start = self.points.items.len - 1 });
+
+                std.log.info(".down done", .{});
+                return true;
+            },
+            .move => {
+                std.log.info(".move", .{});
+                if (self.lines.getLastOrNull()) |line| {
+                    if (line.end == null) {
+                        Globals.needs_repaint = true;
+                        return true;
+                    }
+                }
+                return false;
+            },
+            .up => {
+                if (self.lines.items.len == 0)
+                    return false;
+
+                var line: *Line = &self.lines.items[self.lines.items.len - 1];
+                if (line.end == null) {
+                    Globals.needs_repaint = true;
+
+                    // TODO handle snapping
+                    try self.points.append(self.allocator, .{
+                        .x = @floatFromInt(mouse_pos.x),
+                        .y = @floatFromInt(mouse_pos.y),
+                    });
+
+                    line.end = self.points.items.len - 1;
+                    std.log.info("ended line: {any}", .{self.lines.getLast()});
+                    return true;
+                }
+            },
+        }
+        return false;
+    }
+};
+
 const Globals = struct {
     var toolbar = Toolbar{};
+    var drawing: Drawing = undefined;
+
+    var allocator: std.mem.Allocator = undefined;
     var renderer: *zsdl.Renderer = undefined;
     var ui_font: *zsdl.ttf.Font = undefined;
 
@@ -192,16 +303,37 @@ pub fn main() !void {
     // handle ONLY window resize
     SDL_SetEventFilter(filterEvent, window);
 
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer if (gpa.deinit() != .ok) std.log.warn("gpa problems!", .{});
+    Globals.allocator = gpa.allocator();
+
+    Globals.drawing = Drawing.init(Globals.allocator);
+    defer Globals.drawing.deinit();
+
     mainLoop: while (true) {
         const frame_start = zsdl.getPerformanceCounter();
         const event = try waitEvent();
         switch (event.type) {
             .quit => break :mainLoop,
+            // TODO make nicer
             .mousebuttonup => blk: {
+                if (try Globals.drawing.mouseEvent(.up, .{ .x = event.button.x, .y = event.button.y }))
+                    break :blk;
+
                 if (Globals.toolbar.mouseEvent(.up, .{ .x = event.button.x, .y = event.button.y }))
                     break :blk;
             },
+            .mousebuttondown => blk: {
+                if (Globals.toolbar.mouseEvent(.down, .{ .x = event.button.x, .y = event.button.y }))
+                    break :blk;
+
+                if (try Globals.drawing.mouseEvent(.down, .{ .x = event.button.x, .y = event.button.y }))
+                    break :blk;
+            },
             .mousemotion => blk: {
+                if (try Globals.drawing.mouseEvent(.move, .{ .x = event.motion.x, .y = event.motion.y }))
+                    break :blk;
+
                 if (Globals.toolbar.mouseEvent(.move, .{ .x = event.motion.x, .y = event.motion.y }))
                     break :blk;
             },
@@ -209,7 +341,7 @@ pub fn main() !void {
             else => {},
         }
 
-        try draw();
+        try draw(Globals.renderer);
 
         const elapsed: f32 = @as(f32, @floatFromInt(zsdl.getPerformanceCounter() - frame_start)) /
             @as(f32, @floatFromInt(zsdl.getPerformanceFrequency()));
@@ -219,12 +351,21 @@ pub fn main() !void {
     }
 }
 
-fn draw() !void {
+fn draw(renderer: *zsdl.Renderer) !void {
+    std.log.info(".draw", .{});
     if (Globals.needs_repaint) {
         Globals.needs_repaint = false;
-        try renderAxes(Globals.renderer);
-        try Globals.toolbar.render(Globals.renderer);
-        Globals.renderer.present();
+
+        std.log.info(".draw axes", .{});
+        try renderAxes(renderer);
+        std.log.info(".draw drawing", .{});
+        try Globals.drawing.render(renderer);
+        std.log.info(".draw toolbar", .{});
+        try Globals.toolbar.render(renderer);
+
+        std.log.info(".draw present", .{});
+        renderer.present();
+        std.log.info(".draw done", .{});
     }
 }
 
