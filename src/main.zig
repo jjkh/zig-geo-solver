@@ -157,8 +157,13 @@ const Line = struct {
             break :pt zsdl.PointF{ .x = @floatFromInt(mouse_x), .y = @floatFromInt(mouse_y) };
         };
 
-        try renderer.setDrawColorRGB(0, 0, 0);
-        try renderer.drawLineF(start.x, start.y, end.x, end.y);
+        try zsdl_gfx.thickLine(
+            renderer,
+            .{ .x = @intFromFloat(start.x), .y = @intFromFloat(start.y) },
+            .{ .x = @intFromFloat(end.x), .y = @intFromFloat(end.y) },
+            1.5,
+            zsdl.Color.black,
+        );
     }
 
     fn setEnd(self: *Line, end: *const zsdl.PointF) void {
@@ -187,7 +192,7 @@ const Drawing = struct {
             try line.render(renderer);
 
         for (self.points.items) |point|
-            try zsdl_gfx.aaFilledEllipseRGBA(renderer, point, .{ .x = 2.5, .y = 2.5 }, zsdl.Color.red);
+            try zsdl_gfx.filledEllipse(renderer, point, .{ .x = 2.5, .y = 2.5 }, zsdl.Color.red);
     }
 
     fn mouseEvent(self: *Drawing, event_type: enum { up, down, move }, mouse_pos: zsdl.Point) !bool {

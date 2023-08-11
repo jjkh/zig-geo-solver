@@ -47,42 +47,35 @@ const BresenhamIterator = struct {
     count: u32,
 };
 
-/// Draw pixel in currently set color.
-fn pixel(renderer: *zsdl.Renderer, x: i16, y: i16) !void {
-    try renderer.drawPoint(x, y);
+fn setColorAndBlend(renderer: *zsdl.Renderer, color: zsdl.Color) !void {
+    if (color.a != 0xFF)
+        try renderer.setDrawBlendMode(.blend);
+    try renderer.setDrawColor(color);
 }
 
 /// Draw pixel with blending enabled if a<255
-fn pixelRGBA(renderer: *zsdl.Renderer, x: i16, y: i16, r: u8, g: u8, b: u8, a: u8) !void {
-    if (a != 0xFF)
-        try renderer.setDrawBlendMode(.blend);
-
-    try renderer.setDrawColorRGBA(renderer, r, g, b, a);
-    try renderer.drawPoint(renderer, x, y);
+fn pixel(renderer: *zsdl.Renderer, pt: zsdl.Point, color: ?zsdl.Color) !void {
+    if (color) |c|
+        try setColorAndBlend(renderer, c);
+    try renderer.drawPoint(pt.x, pt.y);
 }
 
-/// Draw pixel with blending enabled and using alpha weight on color.
-fn pixelRGBAWeight(renderer: *zsdl.Renderer, x: i16, y: i16, r: u8, g: u8, b: u8, a: u8, weight: u32) !void {
-    // modify alpha by weight
-    var ax: u32 = a;
-    ax = (ax * weight) >> 8;
-    a = if (ax < 0xFF) @truncate(ax) else 0xFF;
-
-    try pixelRGBA(renderer, x, y, r, g, b, a);
-}
-
-/// Draw horizontal line in currently set color.
-fn hline(renderer: *zsdl.Renderer, x1: i16, x2: i16, y: i16) !void {
+/// Draw horizontal line with blending.
+fn hline(renderer: *zsdl.Renderer, x1: i32, x2: i32, y: i32, color: ?zsdl.Color) !void {
+    if (color) |c|
+        try setColorAndBlend(renderer, c);
     try renderer.drawLine(x1, y, x2, y);
 }
 
-/// Draw horizontal line in currently set color.
-fn hlineRGBA(renderer: *zsdl.Renderer, x1: i16, x2: i16, y: i16) !void {
-    try renderer.drawLine(x1, y, x2, y);
+/// Draw vertical line in currently set color.
+fn vline(renderer: *zsdl.Renderer, x: i32, y1: i32, y2: i32, color: ?zsdl.Color) !void {
+    if (color) |c|
+        try setColorAndBlend(renderer, c);
+    try renderer.drawLine(x, y1, x, y2);
 }
 
 /// Draw anti-aliased filled ellipse with blending.
-pub fn aaFilledEllipseRGBA(renderer: *zsdl.Renderer, c: zsdl.PointF, r: zsdl.PointF, col: zsdl.Color) !void {
+pub fn filledEllipse(renderer: *zsdl.Renderer, c: zsdl.PointF, r: zsdl.PointF, col: zsdl.Color) !void {
     if (r.x <= 0.0 or r.y <= 0.0)
         return error.InvalidRadius;
 
@@ -199,4 +192,270 @@ pub fn aaFilledEllipseRGBA(renderer: *zsdl.Renderer, c: zsdl.PointF, r: zsdl.Poi
             }
         }
     }
+}
+
+/// Draw box (filled rectangle) with blending.
+pub fn box(renderer: *zsdl.Renderer, rect: zsdl.Rect, color: zsdl.Color) !void {
+    // special cases (straight line or single point)
+    if (rect.w == 0) {
+        if (rect.h == 0)
+            return pixel(renderer, .{ .x = rect.x, .y = rect.y }, color)
+        else
+            return vline(renderer, rect.x, rect.y, rect.y + rect.h, color);
+    } else if (rect.h == 0) {
+        return hline(renderer, rect.x, rect.x + rect.w, rect.y, color);
+    }
+
+    try setColorAndBlend(renderer, color);
+    try renderer.fillRect(rect);
+}
+
+// Code for Murphy thick line algorithm from http://kt8216.unixcab.org/murphy/
+fn xPerpendicular(
+    renderer: *zsdl.Renderer,
+    a: zsdl.Point,
+    dx: i32,
+    dy: i32,
+    x_step: i32,
+    y_step: i32,
+    e_init: i32,
+    w_left: i32,
+    w_right: i32,
+    w_init: i32,
+) !void {
+    const threshold = dx - 2 * dy;
+    const e_diag = -2 * dx;
+    const e_square = 2 * dy;
+
+    var p: i32 = 0;
+    var q: i32 = 0;
+
+    var x = a.x;
+    var y = a.y;
+    var err = e_init;
+    var tk = dx + dy - w_init;
+    while (tk <= w_left) : (q += 1) {
+        try renderer.drawPoint(x, y);
+        if (err >= threshold) {
+            x += x_step;
+            err += e_diag;
+            tk += 2 * dy;
+        }
+        err += e_square;
+        y += y_step;
+        tk += 2 * dx;
+    }
+
+    x = a.x;
+    y = a.y;
+    err = -e_init;
+    tk = dx + dy + w_init;
+    while (tk <= w_right) : (p += 1) {
+        if (p > 0)
+            try renderer.drawPoint(x, y);
+
+        if (err > threshold) {
+            x -= x_step;
+            err += e_diag;
+            tk += 2 * dy;
+        }
+        err += e_square;
+        y -= y_step;
+        tk += 2 * dx;
+    }
+
+    // we need this for very thin lines
+    if (q == 0 and p < 2)
+        try renderer.drawPoint(a.x, a.y);
+}
+
+fn xVarThickLine(
+    renderer: *zsdl.Renderer,
+    a: zsdl.Point,
+    dx: i32,
+    dy: i32,
+    x_step: i32,
+    y_step: i32,
+    width: f64,
+    px_step: i32,
+    py_step: i32,
+) !void {
+    var p_err: i32 = 0;
+    var err: i32 = 0;
+    var new_a = .{ .x = a.x, .y = a.y };
+    const threshold = dx - 2 * dy;
+    const e_diag = -2 * dx;
+    const e_square = 2 * dy;
+    const length: u32 = @intCast(dx + 1);
+    const d = @sqrt(@as(f64, @floatFromInt(dx * dx + dy * dy)));
+    const w_left: i32 = @intFromFloat(width * d + 0.5);
+    const w_right: i32 = @as(i32, @intFromFloat(2 * width * d + 0.5)) - w_left;
+
+    for (0..length) |_| {
+        try xPerpendicular(renderer, new_a, dx, dy, px_step, py_step, p_err, w_left, w_right, err);
+
+        if (err >= threshold) {
+            new_a.y += y_step;
+            err += e_diag;
+            if (p_err >= threshold) {
+                try xPerpendicular(renderer, new_a, dx, dy, px_step, py_step, (p_err + e_diag + e_square), w_left, w_right, err);
+                p_err += e_diag;
+            }
+            p_err += e_square;
+        }
+        err += e_square;
+        new_a.x += x_step;
+    }
+}
+
+fn yPerpendicular(
+    renderer: *zsdl.Renderer,
+    a: zsdl.Point,
+    dx: i32,
+    dy: i32,
+    x_step: i32,
+    y_step: i32,
+    e_init: i32,
+    w_left: i32,
+    w_right: i32,
+    w_init: i32,
+) !void {
+    const threshold = dy - 2 * dx;
+    const e_diag = -2 * dy;
+    const e_square = 2 * dx;
+
+    var p: i32 = 0;
+    var q: i32 = 0;
+
+    var x = a.x;
+    var y = a.y;
+    var err = -e_init;
+    var tk = dx + dy + w_init;
+    while (tk <= w_left) : (q += 1) {
+        try renderer.drawPoint(x, y);
+        if (err >= threshold) {
+            y += y_step;
+            err += e_diag;
+            tk += 2 * dx;
+        }
+        err += e_square;
+        x += x_step;
+        tk += 2 * dy;
+    }
+
+    x = a.x;
+    y = a.y;
+    err = e_init;
+    tk = dx + dy - w_init;
+    while (tk <= w_right) : (p += 1) {
+        if (p > 0)
+            try renderer.drawPoint(x, y);
+
+        if (err > threshold) {
+            y -= y_step;
+            err += e_diag;
+            tk += 2 * dx;
+        }
+        err += e_square;
+        x -= x_step;
+        tk += 2 * dy;
+    }
+
+    // we need this for very thin lines
+    if (q == 0 and p < 2)
+        try renderer.drawPoint(a.x, a.y);
+}
+
+fn yVarThickLine(
+    renderer: *zsdl.Renderer,
+    a: zsdl.Point,
+    dx: i32,
+    dy: i32,
+    x_step: i32,
+    y_step: i32,
+    width: f64,
+    px_step: i32,
+    py_step: i32,
+) !void {
+    var p_err: i32 = 0;
+    var err: i32 = 0;
+    var new_a = .{ .x = a.x, .y = a.y };
+    const threshold = dy - 2 * dx;
+    const e_diag = -2 * dy;
+    const e_square = 2 * dx;
+    const length: u32 = @intCast(dy + 1);
+    const d = @sqrt(@as(f64, @floatFromInt(dx * dx + dy * dy)));
+    const w_left: i32 = @intFromFloat(width * d + 0.5);
+    const w_right: i32 = @as(i32, @intFromFloat(2 * width * d + 0.5)) - w_left;
+
+    for (0..length) |_| {
+        try yPerpendicular(renderer, new_a, dx, dy, px_step, py_step, p_err, w_left, w_right, err);
+
+        if (err >= threshold) {
+            new_a.x += x_step;
+            err += e_diag;
+            if (p_err >= threshold) {
+                try yPerpendicular(renderer, new_a, dx, dy, px_step, py_step, (p_err + e_diag + e_square), w_left, w_right, err);
+                p_err += e_diag;
+            }
+            p_err += e_square;
+        }
+        err += e_square;
+        new_a.y += y_step;
+    }
+}
+
+fn drawVarThickLine(renderer: *zsdl.Renderer, a: zsdl.Point, b: zsdl.Point, width: f64) !void {
+    var dx: i32 = b.x - a.x;
+    var dy: i32 = b.y - a.y;
+    var x_step: i32 = 1;
+    var y_step: i32 = 1;
+
+    if (dx < 0) {
+        dx = -dx;
+        x_step = -1;
+    }
+    if (dy < 0) {
+        dy = -dy;
+        y_step = -1;
+    }
+
+    if (dx == 0) x_step = 0;
+    if (dy == 0) y_step = 0;
+
+    // TODO: work this out... why y_step*4?
+    var py_step: i32 = 0;
+    var px_step: i32 = 0;
+    switch (x_step + y_step * 4) {
+        // zig fmt: off
+        -1 + -1*4 => { py_step = -1; px_step =  1; }, // -5
+        -1 +  0*4 => { py_step = -1; px_step =  0; }, // -1
+        -1 +  1*4 => { py_step =  1; px_step =  1; }, // 3
+         0 + -1*4 => { py_step =  0; px_step = -1; }, // -4
+         0 +  0*4 => { py_step =  0; px_step =  0; }, // 0
+         0 +  1*4 => { py_step =  0; px_step =  1; }, // 4
+         1 + -1*4 => { py_step = -1; px_step = -1; }, // -3
+         1 +  0*4 => { py_step = -1; px_step =  0; }, // 1
+         1 +  1*4 => { py_step =  1; px_step = -1; }, // 5
+         else => {},
+        // zig fmt: on
+    }
+
+    if (dx > dy)
+        try xVarThickLine(renderer, a, dx, dy, x_step, y_step, width + 1.0, px_step, py_step)
+    else
+        try yVarThickLine(renderer, a, dx, dy, x_step, y_step, width + 1.0, px_step, py_step);
+}
+
+pub fn thickLine(renderer: *zsdl.Renderer, a: zsdl.Point, b: zsdl.Point, width: f32, color: zsdl.Color) !void {
+    if (width == 0) return error.ZeroWidth;
+
+    // special case: thick "point"
+    if (a.x == b.x and a.y == b.y) {
+        const pixel_width: u16 = @intFromFloat(width);
+        return box(renderer, .{ .x = a.x - pixel_width / 2, .y = a.y - pixel_width / 2, .w = pixel_width, .h = pixel_width }, color);
+    }
+
+    try setColorAndBlend(renderer, color);
+    try drawVarThickLine(renderer, a, b, width);
 }
