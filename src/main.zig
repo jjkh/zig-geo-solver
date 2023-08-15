@@ -1,6 +1,5 @@
 const std = @import("std");
 const zsdl = @import("zsdl");
-const zsdl_gfx = @import("zsdl_gfx.zig");
 
 // missing from zsdl
 pub fn waitEvent() !zsdl.Event {
@@ -145,8 +144,9 @@ const Toolbar = struct {
 const Line = struct {
     start: usize,
     end: ?usize = null,
+    vertices: ?[4]zsdl.Vertex = null,
 
-    fn render(self: Line, renderer: *zsdl.Renderer) !void {
+    fn render(self: *Line, renderer: *zsdl.Renderer) !void {
         const start = Globals.drawing.points.items[self.start];
         const end = if (self.end) |end_idx|
             Globals.drawing.points.items[end_idx]
@@ -157,13 +157,31 @@ const Line = struct {
             break :pt zsdl.PointF{ .x = @floatFromInt(mouse_x), .y = @floatFromInt(mouse_y) };
         };
 
-        try zsdl_gfx.thickLine(
-            renderer,
-            .{ .x = @intFromFloat(start.x), .y = @intFromFloat(start.y) },
-            .{ .x = @intFromFloat(end.x), .y = @intFromFloat(end.y) },
-            1.5,
-            zsdl.Color.black,
-        );
+        const width = 2.5;
+        const color = zsdl.Color.black;
+        const verts = self.vertices orelse blk: {
+            const vec = .{ .x = end.x - start.x, .y = end.y - start.y };
+            const vec_len = @sqrt(vec.x * vec.x + vec.y * vec.y);
+            const vecn = .{ .x = vec.x / vec_len, .y = vec.y / vec_len };
+
+            const norm1 = .{ .x = vecn.y * width / 2, .y = -vecn.x * width / 2 };
+            const norm2 = .{ .x = -vecn.y * width / 2, .y = vecn.x * width / 2 };
+
+            const vertices = [_]zsdl.Vertex{
+                .{ .position = .{ .x = start.x + norm1.x, .y = start.y + norm1.y }, .color = color },
+                .{ .position = .{ .x = start.x + norm2.x, .y = start.y + norm2.y }, .color = color },
+                .{ .position = .{ .x = end.x + norm2.x, .y = end.y + norm2.y }, .color = color },
+                .{ .position = .{ .x = end.x + norm1.x, .y = end.y + norm1.y }, .color = color },
+            };
+            if (self.end != null) {
+                self.vertices = undefined;
+                for (vertices, &self.vertices.?) |v0, *v1|
+                    v1.* = v0;
+            }
+            break :blk vertices;
+        };
+        const indices = .{ 0, 1, 2, 2, 3, 0 };
+        try renderer.drawGeometry(null, &verts, &indices);
     }
 
     fn setEnd(self: *Line, end: *const zsdl.PointF) void {
@@ -188,11 +206,38 @@ const Drawing = struct {
     }
 
     fn render(self: Drawing, renderer: *zsdl.Renderer) !void {
-        for (self.lines.items) |line|
+        for (self.lines.items) |*line|
             try line.render(renderer);
 
-        for (self.points.items) |point|
-            try zsdl_gfx.filledEllipse(renderer, point, .{ .x = 2.5, .y = 2.5 }, zsdl.Color.red);
+        // TODO render this to texture and reuse
+        const tau = std.math.tau;
+        const radius = 3;
+        const outside_points = 6;
+        const color = zsdl.Color.red;
+        const indices = comptime x: {
+            var idxs: [outside_points * 3]u32 = undefined;
+            for (0..outside_points - 1) |i| {
+                idxs[i * 3] = 0;
+                idxs[i * 3 + 1] = i + 1;
+                idxs[i * 3 + 2] = i + 2;
+            }
+            idxs[(outside_points - 1) * 3] = 0;
+            idxs[(outside_points - 1) * 3 + 1] = outside_points;
+            idxs[(outside_points - 1) * 3 + 2] = 1;
+
+            break :x idxs;
+        };
+        for (self.points.items) |pt| {
+            var vertices: [outside_points + 1]zsdl.Vertex = undefined;
+            vertices[0] = .{ .position = pt, .color = color };
+            for (0..outside_points) |i| {
+                vertices[i + 1] = .{ .position = .{
+                    .x = pt.x + (radius * std.math.cos(@as(f32, @floatFromInt(i)) * tau / outside_points)),
+                    .y = pt.y + (radius * std.math.sin(@as(f32, @floatFromInt(i)) * tau / outside_points)),
+                }, .color = color };
+            }
+            try renderer.drawGeometry(null, &vertices, &indices);
+        }
     }
 
     fn mouseEvent(self: *Drawing, event_type: enum { up, down, move }, mouse_pos: zsdl.Point) !bool {
@@ -306,6 +351,9 @@ pub fn main() !void {
 
     Globals.drawing = Drawing.init(Globals.allocator);
     defer Globals.drawing.deinit();
+
+    // FIXME: doesn't seem to make a difference
+    _ = zsdl.setHint("SDL_HINT_RENDER_SCALE_QUALITY", "1");
 
     mainLoop: while (true) {
         const frame_start = zsdl.getPerformanceCounter();
