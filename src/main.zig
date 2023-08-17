@@ -131,22 +131,44 @@ const Toolbar = struct {
     }
 };
 
-fn toScreenF(pt: anytype) zsdl.PointF {
-    if (@TypeOf(pt.x) == f32) {
-        return .{
-            .x = (pt.x / Globals.zoom_level + @as(f32, @floatFromInt(Globals.origin.x))),
-            .y = (pt.y / Globals.zoom_level + @as(f32, @floatFromInt(Globals.origin.y))),
-        };
-    } else unreachable;
+fn toScreen(pt: zsdl.Point) zsdl.Point {
+    const pan_dist = if (Globals.pan) |pan_info| pan_info.dist() else zsdl.Point{ .x = 0, .y = 0 };
+    const origin = zsdl.PointF{
+        .x = @floatFromInt(Globals.origin_offset.x + pan_dist.x),
+        .y = @floatFromInt(Globals.origin_offset.y + pan_dist.y),
+    };
+    return .{
+        .x = @intFromFloat(@as(f32, @floatFromInt(pt.x)) / Globals.zoom_level + origin.x),
+        .y = @intFromFloat(@as(f32, @floatFromInt(pt.y)) / Globals.zoom_level + origin.y),
+    };
 }
 
-fn toGridF(pt: anytype) zsdl.PointF {
-    if (@TypeOf(pt.x) == i32) {
-        return .{
-            .x = @as(f32, @floatFromInt(pt.x - Globals.origin.x)) * Globals.zoom_level,
-            .y = @as(f32, @floatFromInt(pt.y - Globals.origin.y)) * Globals.zoom_level,
-        };
-    } else unreachable;
+fn toScreenF(pt: zsdl.PointF) zsdl.PointF {
+    const pan_dist = if (Globals.pan) |pan_info| pan_info.dist() else zsdl.Point{ .x = 0, .y = 0 };
+    const origin = zsdl.PointF{
+        .x = @floatFromInt(Globals.origin_offset.x + pan_dist.x),
+        .y = @floatFromInt(Globals.origin_offset.y + pan_dist.y),
+    };
+    return .{
+        .x = pt.x / Globals.zoom_level + origin.x,
+        .y = pt.y / Globals.zoom_level + origin.y,
+    };
+}
+
+fn getOrigin() zsdl.Point {
+    return toScreen(.{ .x = 0, .y = 0 });
+}
+
+fn toGridF(pt: zsdl.Point) zsdl.PointF {
+    const pan_dist = if (Globals.pan) |pan_info| pan_info.dist() else zsdl.Point{ .x = 0, .y = 0 };
+    const origin = zsdl.PointF{
+        .x = @floatFromInt(Globals.origin_offset.x + pan_dist.x),
+        .y = @floatFromInt(Globals.origin_offset.y + pan_dist.y),
+    };
+    return .{
+        .x = (@as(f32, @floatFromInt(pt.x)) - origin.x) * Globals.zoom_level,
+        .y = (@as(f32, @floatFromInt(pt.y)) - origin.y) * Globals.zoom_level,
+    };
 }
 
 // TODO: give units and whatever
@@ -289,6 +311,25 @@ const Drawing = struct {
     }
 };
 
+const PanInfo = struct {
+    start: zsdl.Point,
+    current: zsdl.Point,
+
+    pub fn init(start: zsdl.Point) PanInfo {
+        return .{
+            .start = start,
+            .current = start,
+        };
+    }
+
+    pub fn dist(self: PanInfo) zsdl.Point {
+        return .{
+            .x = self.current.x - self.start.x,
+            .y = self.current.y - self.start.y,
+        };
+    }
+};
+
 const Globals = struct {
     var toolbar = Toolbar{};
     var drawing: Drawing = undefined;
@@ -302,10 +343,11 @@ const Globals = struct {
     var needs_repaint: bool = true;
 
     var shift_held: bool = false;
-    var pan_start: ?zsdl.Point = null;
+    var pan: ?PanInfo = null;
+    var current_pan: ?zsdl.Point = null;
 
     var zoom_level: f32 = 1;
-    var origin: zsdl.Point = undefined;
+    var origin_offset: zsdl.Point = undefined; // in scree
 };
 
 pub fn main() !void {
@@ -328,13 +370,17 @@ pub fn main() !void {
     Globals.renderer = try zsdl.Renderer.create(window, null, .{});
     defer Globals.renderer.destroy();
 
-    var ww: i32 = undefined;
-    var wh: i32 = undefined;
-    try window.getSize(&ww, &wh);
-    var rs = try Globals.renderer.getOutputSize();
-    Globals.x_scale = @as(f32, @floatFromInt(rs.w)) / @as(f32, @floatFromInt(ww));
-    Globals.y_scale = @as(f32, @floatFromInt(rs.w)) / @as(f32, @floatFromInt(ww));
-    try Globals.renderer.setScale(Globals.x_scale, Globals.y_scale);
+    {
+        var ww: i32 = undefined;
+        var wh: i32 = undefined;
+        try window.getSize(&ww, &wh);
+        var rs = try Globals.renderer.getOutputSize();
+        Globals.x_scale = @as(f32, @floatFromInt(rs.w)) / @as(f32, @floatFromInt(ww));
+        Globals.y_scale = @as(f32, @floatFromInt(rs.w)) / @as(f32, @floatFromInt(ww));
+        try Globals.renderer.setScale(Globals.x_scale, Globals.y_scale);
+    }
+    const screen_size = try screenSize(Globals.renderer);
+    Globals.origin_offset = .{ .x = @divTrunc(screen_size.x, 2), .y = @divTrunc(screen_size.y, 2) };
 
     Globals.toolbar.tools.appendSliceAssumeCapacity(&[_]Toolbar.Tool{
         .{ .name = "mv", .action = logButtonPress },
@@ -356,7 +402,7 @@ pub fn main() !void {
     defer Globals.drawing.deinit();
 
     // FIXME: doesn't seem to make a difference
-    _ = zsdl.setHint("SDL_HINT_RENDER_SCALE_QUALITY", "1");
+    _ = zsdl.setHint("SDL_HINT_RENDER_SCALE_QUALITY", "2");
 
     mainLoop: while (true) {
         const frame_start = zsdl.getPerformanceCounter();
@@ -366,6 +412,17 @@ pub fn main() !void {
             // TODO make nicer
             .mousebuttonup => blk: {
                 const mouse_pos = .{ .x = event.button.x, .y = event.button.y };
+
+                if (Globals.pan) |pan_info| {
+                    const pan_dist = pan_info.dist();
+                    Globals.origin_offset.x += pan_dist.x;
+                    Globals.origin_offset.y += pan_dist.y;
+                    Globals.pan = null;
+                    if (!Globals.shift_held)
+                        (try zsdl_ext.Cursor.current()).destroy();
+                    break :blk;
+                }
+
                 if (try Globals.drawing.mouseEvent(.up, toGridF(mouse_pos)))
                     break :blk;
 
@@ -375,10 +432,10 @@ pub fn main() !void {
             .mousebuttondown => blk: {
                 const mouse_pos = .{ .x = event.button.x, .y = event.button.y };
 
-                // if (Globals.shift_held) {
-                //     Globals.pan_start = mouse_pos;
-                //     break :blk;
-                // }
+                if (Globals.shift_held) {
+                    Globals.pan = PanInfo.init(mouse_pos);
+                    break :blk;
+                }
 
                 if (Globals.toolbar.mouseEvent(.down, mouse_pos))
                     break :blk;
@@ -388,6 +445,12 @@ pub fn main() !void {
             },
             .mousemotion => blk: {
                 const mouse_pos = .{ .x = event.motion.x, .y = event.motion.y };
+
+                if (Globals.pan) |*pan_info| {
+                    pan_info.current = mouse_pos;
+                    Globals.needs_repaint = true;
+                    break :blk;
+                }
 
                 if (try Globals.drawing.mouseEvent(.move, toGridF(mouse_pos)))
                     break :blk;
@@ -410,8 +473,7 @@ pub fn main() !void {
             },
             .keyup => {
                 if (event.key.keysym.sym == .lshift) {
-                    if (Globals.pan_start == null)
-                        (try zsdl_ext.Cursor.current()).destroy();
+                    if (Globals.pan == null) (try zsdl_ext.Cursor.current()).destroy();
                     Globals.shift_held = false;
                 }
             },
@@ -440,42 +502,44 @@ fn draw(renderer: *zsdl.Renderer) !void {
     }
 }
 
+fn screenSize(renderer: *zsdl.Renderer) !zsdl.Point {
+    const unscaledSize = try renderer.getOutputSize();
+    return .{
+        .x = @divTrunc(unscaledSize.w, @as(i32, @intFromFloat(Globals.x_scale))),
+        .y = @divTrunc(unscaledSize.h, @as(i32, @intFromFloat(Globals.y_scale))),
+    };
+}
+
 fn renderAxes(renderer: *zsdl.Renderer) !void {
     // colours from https://www.colourlovers.com/palette/490780/The_First_Raindrop
     try renderer.setDrawColorRGB(232, 243, 248);
     try renderer.clear();
 
-    const size = size: {
-        const raw = try renderer.getOutputSize();
-        break :size .{
-            .w = @divTrunc(raw.w, @as(i32, @intFromFloat(Globals.x_scale))),
-            .h = @divTrunc(raw.h, @as(i32, @intFromFloat(Globals.y_scale))),
-        };
-    };
-    Globals.origin = .{ .x = @divFloor(size.w, 2), .y = @divFloor(size.h, 2) };
+    const size = try screenSize(renderer);
+    const origin = getOrigin();
 
     // minor axes
     const minor_axis_step: i32 = @intFromFloat(40 / Globals.zoom_level);
     try renderer.setDrawColorRGB(194, 203, 206);
     {
-        var y: i32 = Globals.origin.y - minor_axis_step;
+        var y: i32 = origin.y - minor_axis_step;
         while (y >= 0) : (y -= minor_axis_step)
-            try renderer.drawLine(0, y, size.w, y);
-        y = Globals.origin.y + minor_axis_step;
-        while (y <= size.h) : (y += minor_axis_step)
-            try renderer.drawLine(0, y, size.w, y);
+            try renderer.drawLine(0, y, size.x, y);
+        y = origin.y + minor_axis_step;
+        while (y <= size.y) : (y += minor_axis_step)
+            try renderer.drawLine(0, y, size.x, y);
     }
     {
-        var x: i32 = Globals.origin.x - minor_axis_step;
+        var x: i32 = origin.x - minor_axis_step;
         while (x >= 0) : (x -= minor_axis_step)
-            try renderer.drawLine(x, 0, x, size.h);
-        x = Globals.origin.x + minor_axis_step;
-        while (x <= size.w) : (x += minor_axis_step)
-            try renderer.drawLine(x, 0, x, size.h);
+            try renderer.drawLine(x, 0, x, size.y);
+        x = origin.x + minor_axis_step;
+        while (x <= size.x) : (x += minor_axis_step)
+            try renderer.drawLine(x, 0, x, size.y);
     }
 
     // main axes
     try renderer.setDrawColorRGB(129, 168, 184);
-    try renderer.drawLine(0, Globals.origin.y, size.w, Globals.origin.y);
-    try renderer.drawLine(Globals.origin.x, 0, Globals.origin.x, size.h);
+    try renderer.drawLine(0, origin.y, size.x, origin.y);
+    try renderer.drawLine(origin.x, 0, origin.x, size.y);
 }
