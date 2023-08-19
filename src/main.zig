@@ -220,23 +220,25 @@ const Drawing = struct {
     // TODO: use zpool? does it makes sense here?
     points: std.ArrayListUnmanaged(zsdl.PointF) = .{},
     lines: std.ArrayListUnmanaged(Line) = .{},
+    hovered_point_index: ?usize = null,
 
-    fn init(allocator: std.mem.Allocator) Drawing {
+    const point_radius = 3;
+
+    pub fn init(allocator: std.mem.Allocator) Drawing {
         return .{ .allocator = allocator };
     }
 
-    fn deinit(self: *Drawing) void {
+    pub fn deinit(self: *Drawing) void {
         self.lines.deinit(self.allocator);
         self.points.deinit(self.allocator);
     }
 
-    fn render(self: Drawing, renderer: *zsdl.Renderer) !void {
+    pub fn render(self: Drawing, renderer: *zsdl.Renderer) !void {
         for (self.lines.items) |*line|
             try line.render(renderer);
 
         // TODO render this to texture and reuse
         const tau = std.math.tau;
-        const radius = 3;
         const outside_points = 6;
         const color = zsdl.Color.red;
         const indices = comptime x: {
@@ -258,25 +260,39 @@ const Drawing = struct {
             vertices[0] = .{ .position = center, .color = color };
             for (0..outside_points) |i| {
                 vertices[i + 1] = .{ .position = .{
-                    .x = center.x + (radius * std.math.cos(@as(f32, @floatFromInt(i)) * tau / outside_points)),
-                    .y = center.y + (radius * std.math.sin(@as(f32, @floatFromInt(i)) * tau / outside_points)),
+                    .x = center.x + (point_radius * std.math.cos(@as(f32, @floatFromInt(i)) * tau / outside_points)),
+                    .y = center.y + (point_radius * std.math.sin(@as(f32, @floatFromInt(i)) * tau / outside_points)),
                 }, .color = color };
             }
             try renderer.drawGeometry(null, &vertices, &indices);
         }
     }
 
-    fn mouseEvent(self: *Drawing, event_type: enum { up, down, move }, mouse_pos: zsdl.PointF) !bool {
+    fn snappedPointIndex(self: Drawing, screen_pos: zsdl.PointF) ?usize {
+        const pow = std.math.pow;
+        for (self.points.items, 0..) |pt, i| {
+            const dist = @sqrt(pow(f32, pt.x - screen_pos.x, 2) + pow(f32, pt.y - screen_pos.y, 2));
+            if (dist < point_radius) {
+                std.log.debug("snapped to point {}: {any}", .{ i, pt });
+                return i;
+            }
+        }
+        return null;
+    }
+
+    pub fn mouseEvent(self: *Drawing, event_type: enum { up, down, move }, mouse_pos: zsdl.PointF) !bool {
         switch (event_type) {
             .down => {
                 // TODO check tool
                 Globals.needs_repaint = true;
 
-                // TODO handle snapping
-                try self.points.append(self.allocator, mouse_pos);
-                std.log.debug("added point {}: {any}", .{ self.points.items.len - 1, self.points.getLast() });
-
-                try self.lines.append(self.allocator, .{ .start = self.points.items.len - 1 });
+                const start_idx = self.snappedPointIndex(mouse_pos) orelse idx: {
+                    try self.points.append(self.allocator, mouse_pos);
+                    const point_idx = self.points.items.len - 1;
+                    std.log.debug("added point {}: {any}", .{ point_idx, self.points.items[point_idx] });
+                    break :idx point_idx;
+                };
+                try self.lines.append(self.allocator, .{ .start = start_idx });
 
                 return true;
             },
@@ -298,10 +314,14 @@ const Drawing = struct {
                     Globals.needs_repaint = true;
 
                     // TODO handle snapping
-                    try self.points.append(self.allocator, mouse_pos);
-                    std.log.debug("point {}: {any}", .{ self.points.items.len - 1, self.points.getLast() });
+                    const end_idx = self.snappedPointIndex(mouse_pos) orelse idx: {
+                        try self.points.append(self.allocator, mouse_pos);
+                        const point_idx = self.points.items.len - 1;
+                        std.log.debug("added point {}: {any}", .{ point_idx, self.points.items[point_idx] });
+                        break :idx point_idx;
+                    };
 
-                    line.end = self.points.items.len - 1;
+                    line.end = end_idx;
                     std.log.debug("line {}: {any}", .{ self.lines.items.len - 1, self.lines.getLast() });
                     return true;
                 }
