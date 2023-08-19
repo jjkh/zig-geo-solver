@@ -270,10 +270,12 @@ const Drawing = struct {
         }
     }
 
-    fn snappedPointIndex(self: Drawing, screen_pos: zsdl.PointF) ?usize {
+    fn snappedPointIndex(self: Drawing, grid_pos: zsdl.PointF) ?usize {
+        const pos1 = toScreenF(grid_pos);
         const pow = std.math.pow;
         for (self.points.items, 0..) |pt, i| {
-            const dist = @sqrt(pow(f32, pt.x - screen_pos.x, 2) + pow(f32, pt.y - screen_pos.y, 2));
+            const pos2 = toScreenF(pt);
+            const dist = @sqrt(pow(f32, pos1.x - pos2.x, 2) + pow(f32, pos1.y - pos2.y, 2));
             if (dist < point_radius) {
                 std.log.debug("snapped to point {}: {any}", .{ i, pt });
                 return i;
@@ -321,7 +323,6 @@ const Drawing = struct {
                 if (line.end == null) {
                     Globals.needs_repaint = true;
 
-                    // TODO handle snapping
                     const end_idx = self.snappedPointIndex(mouse_pos) orelse idx: {
                         try self.points.append(self.allocator, mouse_pos);
                         const point_idx = self.points.items.len - 1;
