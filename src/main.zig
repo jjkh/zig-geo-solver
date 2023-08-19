@@ -240,7 +240,8 @@ const Drawing = struct {
         // TODO render this to texture and reuse
         const tau = std.math.tau;
         const outside_points = 6;
-        const color = zsdl.Color.red;
+        const default_color = zsdl.Color.rgb(100, 100, 100);
+        const hover_color = zsdl.Color.red;
         const indices = comptime x: {
             var idxs: [outside_points * 3]u32 = undefined;
             for (0..outside_points - 1) |i| {
@@ -254,14 +255,15 @@ const Drawing = struct {
 
             break :x idxs;
         };
-        for (self.points.items) |pt| {
+        for (self.points.items, 0..) |pt, i| {
             const center = toScreenF(pt);
+            const color = if (self.hovered_point_index == i) hover_color else default_color;
             var vertices: [outside_points + 1]zsdl.Vertex = undefined;
             vertices[0] = .{ .position = center, .color = color };
-            for (0..outside_points) |i| {
-                vertices[i + 1] = .{ .position = .{
-                    .x = center.x + (point_radius * std.math.cos(@as(f32, @floatFromInt(i)) * tau / outside_points)),
-                    .y = center.y + (point_radius * std.math.sin(@as(f32, @floatFromInt(i)) * tau / outside_points)),
+            for (0..outside_points) |j| {
+                vertices[j + 1] = .{ .position = .{
+                    .x = center.x + (point_radius * std.math.cos(@as(f32, @floatFromInt(j)) * tau / outside_points)),
+                    .y = center.y + (point_radius * std.math.sin(@as(f32, @floatFromInt(j)) * tau / outside_points)),
                 }, .color = color };
             }
             try renderer.drawGeometry(null, &vertices, &indices);
@@ -297,6 +299,12 @@ const Drawing = struct {
                 return true;
             },
             .move => {
+                const new_hover_index = self.snappedPointIndex(mouse_pos);
+                if (new_hover_index != self.hovered_point_index) {
+                    self.hovered_point_index = new_hover_index;
+                    Globals.needs_repaint = true;
+                }
+
                 if (self.lines.getLastOrNull()) |line| {
                     if (line.end == null) {
                         Globals.needs_repaint = true;
@@ -320,9 +328,28 @@ const Drawing = struct {
                         std.log.debug("added point {}: {any}", .{ point_idx, self.points.items[point_idx] });
                         break :idx point_idx;
                     };
-
                     line.end = end_idx;
-                    std.log.debug("line {}: {any}", .{ self.lines.items.len - 1, self.lines.getLast() });
+
+                    const duplicate = for (self.lines.items[0 .. self.lines.items.len - 1]) |other_line| {
+                        if (line.start == other_line.start and line.end == other_line.end)
+                            break true;
+                        if (line.start == other_line.end and line.end == other_line.start)
+                            break true;
+                    } else false;
+
+                    if (duplicate) {
+                        std.log.debug("duplicate line, removing", .{});
+                        _ = self.lines.pop();
+                    } else if (line.end == line.start) {
+                        std.log.debug("zero-length line, removing", .{});
+                        _ = self.lines.pop();
+                        for (self.lines.items) |other_line| {
+                            if (other_line.start == end_idx or other_line.end == end_idx)
+                                break;
+                        } else _ = self.points.pop();
+                    } else {
+                        std.log.debug("line {}: {any}", .{ self.lines.items.len - 1, self.lines.getLast() });
+                    }
                     return true;
                 }
             },
