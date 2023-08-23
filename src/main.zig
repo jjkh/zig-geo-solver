@@ -66,7 +66,7 @@ const Toolbar = struct {
             try renderer.setDrawColorRGB(129, 168, 184);
             try renderer.drawFRect(.{ .x = rect.x, .y = rect.y, .w = rect.w, .h = rect.h + 1 });
 
-            const label_surface = try Globals.ui_font.renderTextBlended(tool.name, zsdl.Color.black);
+            const label_surface = try Globals.ui_font.renderTextBlended(tool.name, zsdl.Color{ .r = 0, .b = 0, .g = 0, .a = 0xFF });
             const label_texture = try renderer.createTextureFromSurface(label_surface);
             const label_size = size: {
                 var label_width_px: c_int = undefined;
@@ -133,7 +133,7 @@ const Toolbar = struct {
 
 fn toScreen(pt: zsdl.Point) zsdl.Point {
     const pan_dist = if (Globals.pan) |pan_info| pan_info.dist() else zsdl.Point{ .x = 0, .y = 0 };
-    const origin = zsdl.PointF{
+    const origin = zsdl.FPoint{
         .x = @floatFromInt(Globals.origin_offset.x + pan_dist.x),
         .y = @floatFromInt(Globals.origin_offset.y + pan_dist.y),
     };
@@ -143,9 +143,9 @@ fn toScreen(pt: zsdl.Point) zsdl.Point {
     };
 }
 
-fn toScreenF(pt: zsdl.PointF) zsdl.PointF {
+fn toScreenF(pt: zsdl.FPoint) zsdl.FPoint {
     const pan_dist = if (Globals.pan) |pan_info| pan_info.dist() else zsdl.Point{ .x = 0, .y = 0 };
-    const origin = zsdl.PointF{
+    const origin = zsdl.FPoint{
         .x = @floatFromInt(Globals.origin_offset.x + pan_dist.x),
         .y = @floatFromInt(Globals.origin_offset.y + pan_dist.y),
     };
@@ -159,9 +159,9 @@ fn getOrigin() zsdl.Point {
     return toScreen(.{ .x = 0, .y = 0 });
 }
 
-fn toGridF(pt: zsdl.Point) zsdl.PointF {
+fn toGridF(pt: zsdl.Point) zsdl.FPoint {
     const pan_dist = if (Globals.pan) |pan_info| pan_info.dist() else zsdl.Point{ .x = 0, .y = 0 };
-    const origin = zsdl.PointF{
+    const origin = zsdl.FPoint{
         .x = @floatFromInt(Globals.origin_offset.x + pan_dist.x),
         .y = @floatFromInt(Globals.origin_offset.y + pan_dist.y),
     };
@@ -185,11 +185,11 @@ const Line = struct {
             var mouse_x: i32 = undefined;
             var mouse_y: i32 = undefined;
             _ = zsdl.getMouseState(&mouse_x, &mouse_y);
-            break :pt zsdl.PointF{ .x = @floatFromInt(mouse_x), .y = @floatFromInt(mouse_y) };
+            break :pt zsdl.FPoint{ .x = @floatFromInt(mouse_x), .y = @floatFromInt(mouse_y) };
         };
 
         const width = 2.5;
-        const color = zsdl.Color.black;
+        const color = zsdl.Color{ .r = 0x00, .g = 0x00, .b = 0x00, .a = 0xFF };
         const verts = self.vertices orelse blk: {
             const vec = .{ .x = end.x - start.x, .y = end.y - start.y };
             const vec_len = @sqrt(vec.x * vec.x + vec.y * vec.y);
@@ -199,10 +199,10 @@ const Line = struct {
             const norm2 = .{ .x = -vecn.y * width / 2, .y = vecn.x * width / 2 };
 
             const vertices = [_]zsdl.Vertex{
-                .{ .position = .{ .x = start.x + norm1.x, .y = start.y + norm1.y }, .color = color },
-                .{ .position = .{ .x = start.x + norm2.x, .y = start.y + norm2.y }, .color = color },
-                .{ .position = .{ .x = end.x + norm2.x, .y = end.y + norm2.y }, .color = color },
-                .{ .position = .{ .x = end.x + norm1.x, .y = end.y + norm1.y }, .color = color },
+                .{ .position = .{ .x = start.x + norm1.x, .y = start.y + norm1.y }, .color = color, .tex_coord = undefined },
+                .{ .position = .{ .x = start.x + norm2.x, .y = start.y + norm2.y }, .color = color, .tex_coord = undefined },
+                .{ .position = .{ .x = end.x + norm2.x, .y = end.y + norm2.y }, .color = color, .tex_coord = undefined },
+                .{ .position = .{ .x = end.x + norm1.x, .y = end.y + norm1.y }, .color = color, .tex_coord = undefined },
             };
             // if (self.end != null)
             //     self.vertices = vertices;
@@ -218,7 +218,7 @@ const Drawing = struct {
     allocator: std.mem.Allocator,
 
     // TODO: use zpool? does it makes sense here?
-    points: std.ArrayListUnmanaged(zsdl.PointF) = .{},
+    points: std.ArrayListUnmanaged(zsdl.FPoint) = .{},
     lines: std.ArrayListUnmanaged(Line) = .{},
     hovered_point_index: ?usize = null,
 
@@ -240,8 +240,8 @@ const Drawing = struct {
         // TODO render this to texture and reuse
         const tau = std.math.tau;
         const outside_points = 6;
-        const default_color = zsdl.Color.rgb(100, 100, 100);
-        const hover_color = zsdl.Color.red;
+        const default_color = zsdl.Color{ .r = 0x70, .g = 0x70, .b = 0x70, .a = 0xFF };
+        const hover_color = zsdl.Color{ .r = 0xFF, .g = 0x00, .b = 0x00, .a = 0xFF };
         const indices = comptime x: {
             var idxs: [outside_points * 3]u32 = undefined;
             for (0..outside_points - 1) |i| {
@@ -259,18 +259,18 @@ const Drawing = struct {
             const center = toScreenF(pt);
             const color = if (self.hovered_point_index == i) hover_color else default_color;
             var vertices: [outside_points + 1]zsdl.Vertex = undefined;
-            vertices[0] = .{ .position = center, .color = color };
+            vertices[0] = .{ .position = center, .color = color, .tex_coord = undefined };
             for (0..outside_points) |j| {
                 vertices[j + 1] = .{ .position = .{
                     .x = center.x + (point_radius * std.math.cos(@as(f32, @floatFromInt(j)) * tau / outside_points)),
                     .y = center.y + (point_radius * std.math.sin(@as(f32, @floatFromInt(j)) * tau / outside_points)),
-                }, .color = color };
+                }, .color = color, .tex_coord = undefined };
             }
             try renderer.drawGeometry(null, &vertices, &indices);
         }
     }
 
-    fn snappedPointIndex(self: Drawing, grid_pos: zsdl.PointF) ?usize {
+    fn snappedPointIndex(self: Drawing, grid_pos: zsdl.FPoint) ?usize {
         const pos1 = toScreenF(grid_pos);
         const pow = std.math.pow;
         for (self.points.items, 0..) |pt, i| {
@@ -284,7 +284,7 @@ const Drawing = struct {
         return null;
     }
 
-    pub fn mouseEvent(self: *Drawing, event_type: enum { up, down, move }, mouse_pos: zsdl.PointF) !bool {
+    pub fn mouseEvent(self: *Drawing, event_type: enum { up, down, move }, mouse_pos: zsdl.FPoint) !bool {
         switch (event_type) {
             .down => {
                 // TODO check tool
