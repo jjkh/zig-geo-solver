@@ -45,6 +45,10 @@ const Toolbar = struct {
     };
 
     pub fn render(self: Toolbar, renderer: *zsdl.Renderer) !void {
+
+        // WARNING: calling into SDL_ttf resets this!
+        _ = zsdl.setHint("SDL_RENDER_SCALE_QUALITY", "best");
+
         for (self.tools.slice(), 0..) |tool, i| {
             const rect = zsdl.FRect{
                 .x = 0,
@@ -399,6 +403,8 @@ const Globals = struct {
 };
 
 pub fn main() !void {
+    _ = zsdl.setHint("SDL_WINDOWS_DPI_SCALING", "1");
+
     try zsdl.init(.{ .events = true, .video = true });
     defer zsdl.quit();
 
@@ -409,8 +415,8 @@ pub fn main() !void {
         "Geomtric Constraint Solver",
         zsdl.Window.pos_centered,
         zsdl.Window.pos_centered,
-        640,
-        480,
+        800,
+        600,
         .{ .resizable = true, .allow_highdpi = true },
     );
     defer window.destroy();
@@ -423,8 +429,8 @@ pub fn main() !void {
         var wh: i32 = undefined;
         try window.getSize(&ww, &wh);
         var rs = try Globals.renderer.getOutputSize();
-        Globals.x_scale = @as(f32, @floatFromInt(rs.w)) / @as(f32, @floatFromInt(ww));
-        Globals.y_scale = @as(f32, @floatFromInt(rs.w)) / @as(f32, @floatFromInt(ww));
+        Globals.x_scale = (@as(f32, @floatFromInt(rs.w)) / @as(f32, @floatFromInt(ww)));
+        Globals.y_scale = (@as(f32, @floatFromInt(rs.h)) / @as(f32, @floatFromInt(wh)));
         try Globals.renderer.setScale(Globals.x_scale, Globals.y_scale);
     }
     const screen_size = try screenSize(Globals.renderer);
@@ -437,7 +443,11 @@ pub fn main() !void {
         .{ .name = "fx", .action = logButtonPress },
     });
 
-    Globals.ui_font = try zsdl.ttf.Font.open("Roboto-Regular.ttf", 14 * @as(i32, @intFromFloat(Globals.x_scale)));
+    var font_path_buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+    var base_path = zsdl.getBasePath().?;
+    defer zsdl_ext.free(base_path.ptr);
+    const fontPath = try std.fmt.bufPrintZ(&font_path_buf, "{s}{s}", .{ base_path, "Roboto-Regular.ttf" });
+    Globals.ui_font = try zsdl.ttf.Font.open(fontPath, 14 * @as(i32, @intFromFloat(Globals.x_scale)));
 
     // handle ONLY window resize
     zsdl_ext.setEventFilter(filterEvent, window);
@@ -448,9 +458,6 @@ pub fn main() !void {
 
     Globals.drawing = Drawing.init(Globals.allocator);
     defer Globals.drawing.deinit();
-
-    // FIXME: doesn't seem to make a difference
-    _ = zsdl.setHint("SDL_HINT_RENDER_SCALE_QUALITY", "2");
 
     mainLoop: while (true) {
         const frame_start = zsdl.getPerformanceCounter();

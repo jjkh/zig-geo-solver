@@ -65,3 +65,6 @@ pub const Cursor = opaque {
 pub const setEventFilter = SDL_SetEventFilter;
 pub const EventFilterCallback = *const fn (userdata: ?*anyopaque, event: *zsdl.Event) callconv(.C) c_int;
 extern fn SDL_SetEventFilter(filter: EventFilterCallback, userdata: *anyopaque) void;
+
+pub const free = SDL_free;
+extern fn SDL_free(data: [*c]const u8) void;
