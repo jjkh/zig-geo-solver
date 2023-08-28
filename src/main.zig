@@ -2,10 +2,12 @@ const std = @import("std");
 const zsdl = @import("zsdl");
 const zsdl_ext = @import("zsdl_ext.zig");
 
+const SUPER_SAMPLE_FACTOR = 2;
+
 // to handle window events during drag/resize
 // adapted from https://stackoverflow.com/a/50858339
 fn filterEvent(userdata: ?*anyopaque, event: *zsdl.Event) callconv(.C) c_int {
-    //IMPORTANT: Might be called from a different thread, see SDL_SetEventFilter docs
+    // IMPORTANT: Might be called from a different thread, see SDL_SetEventFilter docs
     if (event.type == .windowevent and event.window.event == .resized) {
         const frame_start = zsdl.getPerformanceCounter();
 
@@ -32,7 +34,7 @@ const Toolbar = struct {
 
     pos: zsdl.Point = .{ .x = 0, .y = 0 },
 
-    const TOOL_SIZE = 30;
+    const TOOL_SIZE = 30 * SUPER_SAMPLE_FACTOR;
 
     pub const Tool = enum {
         move,
@@ -64,9 +66,6 @@ const Toolbar = struct {
     };
 
     pub fn render(self: Toolbar, renderer: *zsdl.Renderer) !void {
-        // WARNING: calling into SDL_ttf resets this!
-        _ = zsdl.setHint("SDL_RENDER_SCALE_QUALITY", "best");
-
         for (std.enums.values(Tool)) |tool| {
             if (self.hovered != tool)
                 if (tool == self.selected)
@@ -84,7 +83,9 @@ const Toolbar = struct {
             try renderer.drawFRect(.{ .x = rect.x, .y = rect.y, .w = rect.w, .h = rect.h + 1 });
 
             const label_surface = try Globals.ui_font.renderTextBlended(tool.shortName(), zsdl.Color{ .r = 0, .b = 0, .g = 0, .a = 0xFF });
+            defer label_surface.free();
             const label_texture = try renderer.createTextureFromSurface(label_surface);
+            defer label_texture.destroy();
             const label_size = size: {
                 var label_width_px: c_int = undefined;
                 var label_height_px: c_int = undefined;
@@ -198,10 +199,10 @@ const Line = struct {
             var mouse_x: i32 = undefined;
             var mouse_y: i32 = undefined;
             _ = zsdl.getMouseState(&mouse_x, &mouse_y);
-            break :pt zsdl.FPoint{ .x = @floatFromInt(mouse_x), .y = @floatFromInt(mouse_y) };
+            break :pt zsdl.FPoint{ .x = @floatFromInt(mouse_x * SUPER_SAMPLE_FACTOR), .y = @floatFromInt(mouse_y * SUPER_SAMPLE_FACTOR) };
         };
 
-        const width = 2.5;
+        const width = 2 * SUPER_SAMPLE_FACTOR;
         const color = zsdl.Color{ .r = 0x00, .g = 0x00, .b = 0x00, .a = 0xFF };
         const verts = self.vertices orelse blk: {
             const vec = .{ .x = end.x - start.x, .y = end.y - start.y };
@@ -237,7 +238,7 @@ const Drawing = struct {
 
     dragged_point_index: ?usize = null,
 
-    const point_radius = 3;
+    const point_radius = 3.5 * SUPER_SAMPLE_FACTOR;
 
     pub fn init(allocator: std.mem.Allocator) Drawing {
         return .{ .allocator = allocator };
@@ -254,7 +255,7 @@ const Drawing = struct {
 
         // TODO render this to texture and reuse
         const tau = std.math.tau;
-        const outside_points = 6;
+        const outside_points = 8;
         const default_color = zsdl.Color{ .r = 0x70, .g = 0x70, .b = 0x70, .a = 0xFF };
         const hover_color = zsdl.Color{ .r = 0xFF, .g = 0x00, .b = 0x00, .a = 0xFF };
         const indices = comptime x: {
@@ -436,6 +437,7 @@ const Globals = struct {
 
     var allocator: std.mem.Allocator = undefined;
     var renderer: *zsdl.Renderer = undefined;
+    var current_texture: *zsdl.Texture = undefined;
     var ui_font: *zsdl.ttf.Font = undefined;
 
     var x_scale: f32 = 1;
@@ -494,7 +496,7 @@ pub fn main() !void {
         defer zsdl_ext.free(base_path.ptr);
         const font_path = try std.mem.concatWithSentinel(Globals.allocator, u8, &[_][]const u8{ base_path, "Roboto-Regular.ttf" }, 0);
         defer Globals.allocator.free(font_path);
-        Globals.ui_font = try zsdl.ttf.Font.open(font_path, @intFromFloat(14 * Globals.x_scale));
+        Globals.ui_font = try zsdl.ttf.Font.open(font_path, @intFromFloat(14 * SUPER_SAMPLE_FACTOR * Globals.x_scale));
     }
     defer Globals.ui_font.close();
 
@@ -511,7 +513,7 @@ pub fn main() !void {
             .quit => break :mainLoop,
             // TODO make nicer
             .mousebuttonup => blk: {
-                const mouse_pos = .{ .x = event.button.x, .y = event.button.y };
+                const mouse_pos = .{ .x = event.button.x * SUPER_SAMPLE_FACTOR, .y = event.button.y * SUPER_SAMPLE_FACTOR };
 
                 if (Globals.pan) |pan_info| {
                     const pan_dist = pan_info.dist();
@@ -530,7 +532,7 @@ pub fn main() !void {
                     break :blk;
             },
             .mousebuttondown => blk: {
-                const mouse_pos = .{ .x = event.button.x, .y = event.button.y };
+                const mouse_pos = .{ .x = event.button.x * SUPER_SAMPLE_FACTOR, .y = event.button.y * SUPER_SAMPLE_FACTOR };
 
                 if (Globals.shift_held) {
                     Globals.pan = PanInfo.init(mouse_pos);
@@ -544,7 +546,7 @@ pub fn main() !void {
                     break :blk;
             },
             .mousemotion => blk: {
-                const mouse_pos = .{ .x = event.motion.x, .y = event.motion.y };
+                const mouse_pos = .{ .x = event.motion.x * SUPER_SAMPLE_FACTOR, .y = event.motion.y * SUPER_SAMPLE_FACTOR };
 
                 if (Globals.pan) |*pan_info| {
                     pan_info.current = mouse_pos;
@@ -594,9 +596,25 @@ fn draw(renderer: *zsdl.Renderer) !void {
     if (Globals.needs_repaint) {
         Globals.needs_repaint = false;
 
+        const output_size = try renderer.getOutputSize();
+        if (output_size.w == 0 or output_size.h == 0) return;
+
+        Globals.current_texture = try renderer.createTexture(.rgba8888, .target, output_size.w * SUPER_SAMPLE_FACTOR, output_size.h * SUPER_SAMPLE_FACTOR);
+        defer {
+            Globals.current_texture.destroy();
+            Globals.current_texture = undefined;
+        }
+        try renderer.setTarget(Globals.current_texture);
+
         try renderAxes(renderer);
         try Globals.drawing.render(renderer);
         try Globals.toolbar.render(renderer);
+
+        try renderer.setTarget(null);
+
+        // WARNING: calling into SDL_ttf resets this!
+        _ = zsdl.setHint("SDL_RENDER_SCALE_QUALITY", "best");
+        try renderer.copy(Globals.current_texture, null, &.{ .x = 0, .y = 0, .w = output_size.w, .h = output_size.h });
 
         renderer.present();
     }
@@ -605,8 +623,8 @@ fn draw(renderer: *zsdl.Renderer) !void {
 fn screenSize(renderer: *zsdl.Renderer) !zsdl.Point {
     const unscaled_size = try renderer.getOutputSize();
     return .{
-        .x = @intFromFloat(@as(f32, @floatFromInt(unscaled_size.w)) / Globals.x_scale),
-        .y = @intFromFloat(@as(f32, @floatFromInt(unscaled_size.h)) / Globals.y_scale),
+        .x = @intFromFloat(@as(f32, @floatFromInt(unscaled_size.w * SUPER_SAMPLE_FACTOR)) / Globals.x_scale),
+        .y = @intFromFloat(@as(f32, @floatFromInt(unscaled_size.h * SUPER_SAMPLE_FACTOR)) / Globals.y_scale),
     };
 }
 
@@ -619,7 +637,7 @@ fn renderAxes(renderer: *zsdl.Renderer) !void {
     const origin = getOrigin();
 
     // minor axes
-    const minor_axis_step: i32 = @intFromFloat(40 / Globals.zoom_level);
+    const minor_axis_step: i32 = @intFromFloat(40 * SUPER_SAMPLE_FACTOR / Globals.zoom_level);
     try renderer.setDrawColorRGB(194, 203, 206);
     {
         var y: i32 = origin.y - minor_axis_step;
