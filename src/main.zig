@@ -431,6 +431,7 @@ pub fn main() !void {
         var rs = try Globals.renderer.getOutputSize();
         Globals.x_scale = (@as(f32, @floatFromInt(rs.w)) / @as(f32, @floatFromInt(ww)));
         Globals.y_scale = (@as(f32, @floatFromInt(rs.h)) / @as(f32, @floatFromInt(wh)));
+        std.log.info("x_scale: {}, y_scale: {}", .{ Globals.x_scale, Globals.y_scale });
         try Globals.renderer.setScale(Globals.x_scale, Globals.y_scale);
     }
     const screen_size = try screenSize(Globals.renderer);
@@ -443,18 +444,21 @@ pub fn main() !void {
         .{ .name = "fx", .action = logButtonPress },
     });
 
-    var font_path_buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
-    var base_path = zsdl.getBasePath().?;
-    defer zsdl_ext.free(base_path.ptr);
-    const fontPath = try std.fmt.bufPrintZ(&font_path_buf, "{s}{s}", .{ base_path, "Roboto-Regular.ttf" });
-    Globals.ui_font = try zsdl.ttf.Font.open(fontPath, 14 * @as(i32, @intFromFloat(Globals.x_scale)));
-
-    // handle ONLY window resize
-    zsdl_ext.setEventFilter(filterEvent, window);
-
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer if (gpa.deinit() != .ok) std.log.warn("gpa problems!", .{});
     Globals.allocator = gpa.allocator();
+
+    {
+        var base_path = zsdl.getBasePath().?;
+        defer zsdl_ext.free(base_path.ptr);
+        const font_path = try std.mem.concatWithSentinel(Globals.allocator, u8, &[_][]const u8{ base_path, "Roboto-Regular.ttf" }, 0);
+        defer Globals.allocator.free(font_path);
+        Globals.ui_font = try zsdl.ttf.Font.open(font_path, @intFromFloat(14 * Globals.x_scale));
+    }
+    defer Globals.ui_font.close();
+
+    // handle ONLY window resize
+    zsdl_ext.setEventFilter(filterEvent, window);
 
     Globals.drawing = Drawing.init(Globals.allocator);
     defer Globals.drawing.deinit();
@@ -558,10 +562,10 @@ fn draw(renderer: *zsdl.Renderer) !void {
 }
 
 fn screenSize(renderer: *zsdl.Renderer) !zsdl.Point {
-    const unscaledSize = try renderer.getOutputSize();
+    const unscaled_size = try renderer.getOutputSize();
     return .{
-        .x = @divTrunc(unscaledSize.w, @as(i32, @intFromFloat(Globals.x_scale))),
-        .y = @divTrunc(unscaledSize.h, @as(i32, @intFromFloat(Globals.y_scale))),
+        .x = @intFromFloat(@as(f32, @floatFromInt(unscaled_size.w)) / Globals.x_scale),
+        .y = @intFromFloat(@as(f32, @floatFromInt(unscaled_size.h)) / Globals.y_scale),
     };
 }
 
