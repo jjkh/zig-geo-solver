@@ -235,6 +235,8 @@ const Drawing = struct {
     lines: std.ArrayListUnmanaged(Line) = .{},
     hovered_point_index: ?usize = null,
 
+    dragged_point_index: ?usize = null,
+
     const point_radius = 3;
 
     pub fn init(allocator: std.mem.Allocator) Drawing {
@@ -298,18 +300,30 @@ const Drawing = struct {
     }
 
     pub fn mouseEvent(self: *Drawing, event_type: enum { up, down, move }, mouse_pos: zsdl.FPoint) !bool {
+        // std.log.debug("mouseEvent: {}, {}", .{ event_type, mouse_pos });
         switch (event_type) {
             .down => {
                 // TODO check tool
                 Globals.needs_repaint = true;
 
-                const start_idx = self.snappedPointIndex(mouse_pos) orelse idx: {
-                    try self.points.append(self.allocator, mouse_pos);
-                    const point_idx = self.points.items.len - 1;
-                    std.log.debug("added point {}: {any}", .{ point_idx, self.points.items[point_idx] });
-                    break :idx point_idx;
-                };
-                try self.lines.append(self.allocator, .{ .start = start_idx });
+                const point_under_cursor = self.snappedPointIndex(mouse_pos);
+                switch (Globals.toolbar.selected) {
+                    .line => {
+                        const start_point = point_under_cursor orelse idx: {
+                            try self.points.append(self.allocator, mouse_pos);
+                            const point_idx = self.points.items.len - 1;
+                            std.log.debug("added point {}: {any}", .{ point_idx, self.points.items[point_idx] });
+                            break :idx point_idx;
+                        };
+                        try self.lines.append(self.allocator, .{ .start = start_point });
+                    },
+                    .move => {
+                        self.dragged_point_index = point_under_cursor;
+                        if (self.dragged_point_index) |point_idx|
+                            self.points.items[point_idx] = mouse_pos;
+                    },
+                    else => {},
+                }
 
                 return true;
             },
@@ -319,12 +333,22 @@ const Drawing = struct {
                     self.hovered_point_index = new_hover_index;
                     Globals.needs_repaint = true;
                 }
-
-                if (self.lines.getLastOrNull()) |line| {
-                    if (line.end == null) {
+                switch (Globals.toolbar.selected) {
+                    .line => {
+                        if (self.lines.getLastOrNull()) |line| {
+                            if (line.end == null) {
+                                Globals.needs_repaint = true;
+                                return true;
+                            }
+                        }
+                    },
+                    .move => {
+                        if (self.dragged_point_index) |point_idx|
+                            self.points.items[point_idx] = mouse_pos;
                         Globals.needs_repaint = true;
                         return true;
-                    }
+                    },
+                    else => {},
                 }
                 return false;
             },
@@ -333,39 +357,54 @@ const Drawing = struct {
                     return false;
 
                 var line: *Line = &self.lines.items[self.lines.items.len - 1];
-                if (line.end == null) {
-                    Globals.needs_repaint = true;
+                switch (Globals.toolbar.selected) {
+                    .line => {
+                        if (line.end == null) {
+                            Globals.needs_repaint = true;
 
-                    const end_idx = self.snappedPointIndex(mouse_pos) orelse idx: {
-                        try self.points.append(self.allocator, mouse_pos);
-                        const point_idx = self.points.items.len - 1;
-                        std.log.debug("added point {}: {any}", .{ point_idx, self.points.items[point_idx] });
-                        break :idx point_idx;
-                    };
-                    line.end = end_idx;
+                            const end_idx = self.snappedPointIndex(mouse_pos) orelse idx: {
+                                try self.points.append(self.allocator, mouse_pos);
+                                const point_idx = self.points.items.len - 1;
+                                std.log.debug("added point {}: {any}", .{ point_idx, self.points.items[point_idx] });
+                                break :idx point_idx;
+                            };
+                            line.end = end_idx;
 
-                    const duplicate = for (self.lines.items[0 .. self.lines.items.len - 1]) |other_line| {
-                        if (line.start == other_line.start and line.end == other_line.end)
-                            break true;
-                        if (line.start == other_line.end and line.end == other_line.start)
-                            break true;
-                    } else false;
+                            const duplicate = for (self.lines.items[0 .. self.lines.items.len - 1]) |other_line| {
+                                if (line.start == other_line.start and line.end == other_line.end)
+                                    break true;
+                                if (line.start == other_line.end and line.end == other_line.start)
+                                    break true;
+                            } else false;
 
-                    if (duplicate) {
-                        std.log.debug("duplicate line, removing", .{});
-                        _ = self.lines.pop();
-                    } else if (line.end == line.start) {
-                        std.log.debug("zero-length line, removing", .{});
-                        _ = self.lines.pop();
-                        for (self.lines.items) |other_line| {
-                            if (other_line.start == end_idx or other_line.end == end_idx)
-                                break;
-                        } else _ = self.points.pop();
-                    } else {
-                        std.log.debug("line {}: {any}", .{ self.lines.items.len - 1, self.lines.getLast() });
-                    }
-                    return true;
+                            if (duplicate) {
+                                std.log.debug("duplicate line, removing", .{});
+                                _ = self.lines.pop();
+                            } else if (line.end == line.start) {
+                                std.log.debug("zero-length line, removing", .{});
+                                _ = self.lines.pop();
+                                for (self.lines.items) |other_line| {
+                                    if (other_line.start == end_idx or other_line.end == end_idx)
+                                        break;
+                                } else _ = self.points.pop();
+                            } else {
+                                std.log.debug("line {}: {any}", .{ self.lines.items.len - 1, self.lines.getLast() });
+                            }
+                            return true;
+                        }
+                    },
+                    .move => {
+                        if (self.dragged_point_index) |point_idx| {
+                            Globals.needs_repaint = true;
+                            self.points.items[point_idx] = mouse_pos;
+                            // TODO: join dropped point to point underneath
+                            self.dragged_point_index = null;
+                            return true;
+                        }
+                    },
+                    else => {},
                 }
+                return false;
             },
         }
         return false;
