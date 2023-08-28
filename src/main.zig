@@ -26,51 +26,64 @@ fn filterEvent(userdata: ?*anyopaque, event: *zsdl.Event) callconv(.C) c_int {
     return 1;
 }
 
-fn logButtonPress(tool: Toolbar.Tool) void {
-    std.log.info("tool '{s}' selected", .{tool.name});
-}
-
 const Toolbar = struct {
-    tools: std.BoundedArray(Tool, 10) = .{},
-    selected: u16 = 1,
-    hovered: ?u16 = null,
+    selected: Tool = .line,
+    hovered: ?Tool = null,
 
     pos: zsdl.Point = .{ .x = 0, .y = 0 },
-    tool_size: f16 = 30,
 
-    // TODO: make tagged union
-    pub const Tool = struct {
-        name: [:0]const u8,
-        action: ?*const fn (@This()) void = null,
+    const TOOL_SIZE = 30;
+
+    pub const Tool = enum {
+        move,
+        line,
+        dimension,
+        fix_point,
+
+        pub fn shortName(self: Tool) [:0]const u8 {
+            return switch (self) {
+                .move => "mv",
+                .line => "ln",
+                .dimension => "dim",
+                .fix_point => "fix",
+            };
+        }
+
+        pub fn rect(self: Tool) zsdl.FRect {
+            return .{
+                .x = 0,
+                .y = @as(f32, @floatFromInt(@intFromEnum(self))) * TOOL_SIZE,
+                .w = TOOL_SIZE,
+                .h = TOOL_SIZE,
+            };
+        }
+
+        pub fn count() usize {
+            return @typeInfo(Tool).Enum.fields.len;
+        }
     };
 
     pub fn render(self: Toolbar, renderer: *zsdl.Renderer) !void {
-
         // WARNING: calling into SDL_ttf resets this!
         _ = zsdl.setHint("SDL_RENDER_SCALE_QUALITY", "best");
 
-        for (self.tools.slice(), 0..) |tool, i| {
-            const rect = zsdl.FRect{
-                .x = 0,
-                .y = @as(f32, @floatFromInt(i)) * self.tool_size,
-                .w = self.tool_size,
-                .h = self.tool_size,
-            };
-
-            if (self.hovered != null and i == self.hovered.?)
-                if (i == self.selected)
+        for (std.enums.values(Tool)) |tool| {
+            if (self.hovered != tool)
+                if (tool == self.selected)
                     try renderer.setDrawColorRGB(177, 203, 209)
                 else
                     try renderer.setDrawColorRGB(232, 243, 248)
-            else if (i == self.selected)
+            else if (tool == self.selected)
                 try renderer.setDrawColorRGB(164, 188, 194)
             else
                 try renderer.setDrawColorRGB(219, 230, 236);
+
+            const rect = tool.rect();
             try renderer.fillFRect(rect);
             try renderer.setDrawColorRGB(129, 168, 184);
             try renderer.drawFRect(.{ .x = rect.x, .y = rect.y, .w = rect.w, .h = rect.h + 1 });
 
-            const label_surface = try Globals.ui_font.renderTextBlended(tool.name, zsdl.Color{ .r = 0, .b = 0, .g = 0, .a = 0xFF });
+            const label_surface = try Globals.ui_font.renderTextBlended(tool.shortName(), zsdl.Color{ .r = 0, .b = 0, .g = 0, .a = 0xFF });
             const label_texture = try renderer.createTextureFromSurface(label_surface);
             const label_size = size: {
                 var label_width_px: c_int = undefined;
@@ -88,8 +101,8 @@ const Toolbar = struct {
                 label_texture,
                 null,
                 &zsdl.FRect{
-                    .x = (self.tool_size - label_size.w) / 2,
-                    .y = (self.tool_size - label_size.h) / 2 + rect.y,
+                    .x = (TOOL_SIZE - label_size.w) / 2,
+                    .y = (TOOL_SIZE - label_size.h) / 2 + rect.y,
                     .w = label_size.w,
                     .h = label_size.h,
                 },
@@ -98,18 +111,15 @@ const Toolbar = struct {
     }
 
     fn mouseEvent(self: *Toolbar, event_type: enum { up, down, move }, mouse_pos: zsdl.Point) bool {
-        if (self.contains(mouse_pos)) |tool_index| {
+        if (self.contains(mouse_pos)) |tool| {
             switch (event_type) {
-                .up => if (self.selected != tool_index) {
-                    self.selected = tool_index;
-                    const button = self.tools.get(tool_index);
-                    if (button.action != null) button.action.?(button);
-
+                .up => if (self.selected != tool) {
+                    self.selected = tool;
                     Globals.needs_repaint = true;
                 },
                 .move => {
-                    if (self.hovered != tool_index) {
-                        self.hovered = tool_index;
+                    if (self.hovered != tool) {
+                        self.hovered = tool;
                         Globals.needs_repaint = true;
                     }
                     return false;
@@ -126,12 +136,11 @@ const Toolbar = struct {
         }
     }
 
-    fn contains(self: Toolbar, pt: zsdl.Point) ?u16 {
-        const tool_size_int: i32 = @intFromFloat(self.tool_size);
-        if (pt.x < self.pos.x or pt.y < self.pos.y or pt.x > self.pos.x + tool_size_int or pt.y > self.pos.y + tool_size_int * self.tools.len)
+    fn contains(self: Toolbar, pt: zsdl.Point) ?Tool {
+        if (pt.x < self.pos.x or pt.y < self.pos.y or pt.x > self.pos.x + TOOL_SIZE or pt.y > self.pos.y + TOOL_SIZE * @as(i32, @intCast(Tool.count())))
             return null;
 
-        return @intCast(@divFloor(pt.y - self.pos.y, tool_size_int));
+        return @enumFromInt(@divFloor(pt.y - self.pos.y, TOOL_SIZE));
     }
 };
 
@@ -436,13 +445,6 @@ pub fn main() !void {
     }
     const screen_size = try screenSize(Globals.renderer);
     Globals.origin_offset = .{ .x = @divTrunc(screen_size.x, 2), .y = @divTrunc(screen_size.y, 2) };
-
-    Globals.toolbar.tools.appendSliceAssumeCapacity(&[_]Toolbar.Tool{
-        .{ .name = "mv", .action = logButtonPress },
-        .{ .name = "ln", .action = logButtonPress },
-        .{ .name = "dm", .action = logButtonPress },
-        .{ .name = "fx", .action = logButtonPress },
-    });
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer if (gpa.deinit() != .ok) std.log.warn("gpa problems!", .{});
