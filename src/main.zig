@@ -192,9 +192,9 @@ const Line = struct {
     vertices: ?[4]zsdl.Vertex = null,
 
     fn render(self: *Line, renderer: *zsdl.Renderer) !void {
-        const start = toScreenF(Globals.drawing.points.items[self.start]);
+        const start = Globals.drawing.points.items[self.start].toScreen();
         const end = if (self.end) |end_idx|
-            toScreenF(Globals.drawing.points.items[end_idx])
+            Globals.drawing.points.items[end_idx].toScreen()
         else pt: {
             var mouse_x: i32 = undefined;
             var mouse_y: i32 = undefined;
@@ -228,11 +228,25 @@ const Line = struct {
     }
 };
 
+const Point = struct {
+    x: f32,
+    y: f32,
+    fixed: bool = false,
+
+    pub fn fromGrid(pt: zsdl.FPoint) Point {
+        return .{ .x = pt.x, .y = pt.y };
+    }
+
+    pub fn toScreen(self: Point) zsdl.FPoint {
+        return toScreenF(.{ .x = self.x, .y = self.y });
+    }
+};
+
 const Drawing = struct {
     allocator: std.mem.Allocator,
 
     // TODO: use zpool? does it makes sense here?
-    points: std.ArrayListUnmanaged(zsdl.FPoint) = .{},
+    points: std.ArrayListUnmanaged(Point) = .{},
     lines: std.ArrayListUnmanaged(Line) = .{},
     hovered_point_index: ?usize = null,
 
@@ -258,7 +272,7 @@ const Drawing = struct {
         const outside_points = 8;
         const default_color = zsdl.Color{ .r = 0x70, .g = 0x70, .b = 0x70, .a = 0xFF };
         const hover_color = zsdl.Color{ .r = 0xFF, .g = 0x00, .b = 0x00, .a = 0xFF };
-        const indices = comptime x: {
+        const circle_indices = comptime x: {
             var idxs: [outside_points * 3]u32 = undefined;
             for (0..outside_points - 1) |i| {
                 idxs[i * 3] = 0;
@@ -272,17 +286,19 @@ const Drawing = struct {
             break :x idxs;
         };
         for (self.points.items, 0..) |pt, i| {
-            const center = toScreenF(pt);
-            const color = if (self.hovered_point_index == i) hover_color else default_color;
-            var vertices: [outside_points + 1]zsdl.Vertex = undefined;
-            vertices[0] = .{ .position = center, .color = color, .tex_coord = undefined };
-            for (0..outside_points) |j| {
-                vertices[j + 1] = .{ .position = .{
-                    .x = center.x + (point_radius * std.math.cos(@as(f32, @floatFromInt(j)) * tau / outside_points)),
-                    .y = center.y + (point_radius * std.math.sin(@as(f32, @floatFromInt(j)) * tau / outside_points)),
-                }, .color = color, .tex_coord = undefined };
+            if (pt.fixed) {} else {
+                const center = pt.toScreen();
+                const color = if (self.hovered_point_index == i) hover_color else default_color;
+                var circle_vertices: [outside_points + 1]zsdl.Vertex = undefined;
+                circle_vertices[0] = .{ .position = center, .color = color, .tex_coord = undefined };
+                for (0..outside_points) |j| {
+                    circle_vertices[j + 1] = .{ .position = .{
+                        .x = center.x + (point_radius * std.math.cos(@as(f32, @floatFromInt(j)) * tau / outside_points)),
+                        .y = center.y + (point_radius * std.math.sin(@as(f32, @floatFromInt(j)) * tau / outside_points)),
+                    }, .color = color, .tex_coord = undefined };
+                }
+                try renderer.drawGeometry(null, &circle_vertices, &circle_indices);
             }
-            try renderer.drawGeometry(null, &vertices, &indices);
         }
     }
 
@@ -290,7 +306,7 @@ const Drawing = struct {
         const pos1 = toScreenF(grid_pos);
         const pow = std.math.pow;
         for (self.points.items, 0..) |pt, i| {
-            const pos2 = toScreenF(pt);
+            const pos2 = pt.toScreen();
             const dist = @sqrt(pow(f32, pos1.x - pos2.x, 2) + pow(f32, pos1.y - pos2.y, 2));
             if (dist < point_radius) {
                 std.log.debug("snapped to point {}: {any}", .{ i, pt });
@@ -311,7 +327,7 @@ const Drawing = struct {
                 switch (Globals.toolbar.selected) {
                     .line => {
                         const start_point = point_under_cursor orelse idx: {
-                            try self.points.append(self.allocator, mouse_pos);
+                            try self.points.append(self.allocator, Point.fromGrid(mouse_pos));
                             const point_idx = self.points.items.len - 1;
                             std.log.debug("added point {}: {any}", .{ point_idx, self.points.items[point_idx] });
                             break :idx point_idx;
@@ -321,7 +337,7 @@ const Drawing = struct {
                     .move => {
                         self.dragged_point_index = point_under_cursor;
                         if (self.dragged_point_index) |point_idx|
-                            self.points.items[point_idx] = mouse_pos;
+                            self.points.items[point_idx] = Point.fromGrid(mouse_pos);
                     },
                     else => {},
                 }
@@ -345,7 +361,7 @@ const Drawing = struct {
                     },
                     .move => {
                         if (self.dragged_point_index) |point_idx|
-                            self.points.items[point_idx] = mouse_pos;
+                            self.points.items[point_idx] = Point.fromGrid(mouse_pos);
                         Globals.needs_repaint = true;
                         return true;
                     },
@@ -364,7 +380,7 @@ const Drawing = struct {
                             Globals.needs_repaint = true;
 
                             const end_idx = self.snappedPointIndex(mouse_pos) orelse idx: {
-                                try self.points.append(self.allocator, mouse_pos);
+                                try self.points.append(self.allocator, Point.fromGrid(mouse_pos));
                                 const point_idx = self.points.items.len - 1;
                                 std.log.debug("added point {}: {any}", .{ point_idx, self.points.items[point_idx] });
                                 break :idx point_idx;
@@ -397,7 +413,7 @@ const Drawing = struct {
                     .move => {
                         if (self.dragged_point_index) |point_idx| {
                             Globals.needs_repaint = true;
-                            self.points.items[point_idx] = mouse_pos;
+                            self.points.items[point_idx] = Point.fromGrid(mouse_pos);
                             // TODO: join dropped point to point underneath
                             self.dragged_point_index = null;
                             return true;
